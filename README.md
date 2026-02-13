@@ -16,5 +16,6 @@ View your app in AI Studio: https://ai.studio/apps/drive/1kbuIrL9euWJdtZiUVymnc-
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+3. **gcloud を使う場合:** direnv により、このディレクトリでは自動的に gcloud の Named Configuration `kiriko-civitas`（account: `h.sato@kiriko.tech`, project: `kiriko-tech`）が使用されます。
+4. Run the app:
    `npm run dev`
