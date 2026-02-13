@@ -1,0 +1,212 @@
+
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Civitas Twin - Architectural Social Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@200;300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-fallback: #000000;
+            --glass: rgba(5, 5, 5, 0.45);
+            --border: rgba(255, 255, 255, 0.08);
+            --accent-white: #ffffff;
+            --text-dim: #888888;
+        }
+
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-image: radial-gradient(circle closest-corner, #111415 14%, #1e4552 36%, #0a0a0a 54%);
+            background-size: 250% 250%;
+            animation: gradient 400s ease infinite;
+            height: 100vh;
+            color: #E5E5E5;
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+            font-style: normal !important;
+        }
+        
+        * {
+            font-style: normal !important;
+        }
+        
+        .font-sans { font-family: 'Plus Jakarta Sans', sans-serif; }
+        
+        /* Static Noise Background Overlay */
+        .bg-static {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: -1;
+            /* 背景レイヤーはbodyのグラデーションを透過させるため背景色なし */
+            background: transparent;
+        }
+        .bg-static::after {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: url('https://grainy-gradients.vercel.app/noise.svg');
+            opacity: 0.15;
+            pointer-events: none;
+            mix-blend-mode: overlay;
+        }
+
+        .glass {
+            background: var(--glass);
+            backdrop-filter: blur(40px);
+            -webkit-backdrop-filter: blur(40px);
+            border: 1px solid var(--border);
+        }
+        
+        /* Reports Table Styling */
+        .prose table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: 3rem 0; 
+            background: rgba(0,0,0,0.2);
+            border: none !important;
+        }
+        .prose th { 
+            background: rgba(255, 255, 255, 0.03); 
+            color: #ccc; 
+            padding: 24px; 
+            font-size: 0.7rem; 
+            text-transform: uppercase; 
+            letter-spacing: 0.4em; 
+            text-align: left;
+            font-weight: 800;
+            border: none !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+        }
+        .prose td { 
+            padding: 24px; 
+            font-size: 1.125rem; 
+            vertical-align: top; 
+            color: #fff; 
+            line-height: 2.0;
+            border: none !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+            word-break: break-word;
+            white-space: normal;
+        }
+        .prose tr:last-child td {
+            border-bottom: none !important;
+        }
+        
+        .prose h1 {
+            font-family: 'Plus Jakarta Sans', sans-serif !important; 
+            font-size: 4rem; 
+            color: #fff; 
+            letter-spacing: -0.06em; 
+            font-weight: 800;
+            text-transform: uppercase;
+            line-height: 0.9;
+        }
+
+        .prose h2 { 
+            font-family: 'Plus Jakarta Sans', sans-serif !important; 
+            font-size: 3rem; 
+            color: #fff; 
+            margin-top: 10rem; 
+            margin-bottom: 4rem; 
+            letter-spacing: -0.06em; 
+            font-weight: 800;
+            text-transform: uppercase;
+            border: none !important;
+            line-height: 1.0;
+        }
+        .prose h3 { 
+            font-family: 'Plus Jakarta Sans', sans-serif !important; 
+            font-weight: 800; 
+            font-size: 0.85rem; 
+            color: #fff; 
+            margin-top: 6rem; 
+            margin-bottom: 2.5rem;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+            border-left: none !important;
+            padding-left: 0 !important;
+            opacity: 0.9;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            padding-bottom: 1rem;
+            width: fit-content;
+        }
+        .prose strong { color: #fff; font-weight: 800; }
+        
+        /* リストのカスタマイズ */
+        .prose ul {
+            list-style: none !important;
+            padding-left: 0.5rem !important;
+            margin-bottom: 2rem !important;
+        }
+        .prose li {
+            position: relative;
+            padding-left: 1.8rem !important;
+            margin-bottom: 0.75rem !important;
+            line-height: 2.0 !important;
+            font-size: 1.125rem !important;
+        }
+        .prose li::before {
+            content: "・";
+            position: absolute;
+            left: 0;
+            color: rgba(255,255,255,0.7);
+            font-weight: bold;
+        }
+        /* ネストされたリストのインデント */
+        .prose ul ul {
+            margin-top: 0.5rem !important;
+            margin-left: 1.5rem !important;
+        }
+
+        .fade-in {
+            animation: fadeIn 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media print {
+            body { background: white !important; color: black !important; }
+            aside, .no-print, button, .sidebar-scroll, .bg-static { display: none !important; }
+            main { overflow: visible !important; height: auto !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+            .prose h1, .prose h2, .prose h3, .prose strong, .prose th { color: black !important; }
+            .prose td, .prose p, .prose li { color: #333 !important; }
+            .prose table, .prose blockquote { border-color: #ddd !important; }
+            .mx-auto { max-width: 100% !important; width: 100% !important; padding: 2cm !important; }
+            .glass { background: transparent !important; border: none !important; backdrop-filter: none !important; }
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react-markdown": "https://esm.sh/react-markdown@^10.1.0",
+    "remark-gfm": "https://esm.sh/remark-gfm@^4.0.0",
+    "rehype-raw": "https://esm.sh/rehype-raw@^7.0.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div class="bg-static"></div>
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
