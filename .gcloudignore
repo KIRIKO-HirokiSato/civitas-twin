@@ -1,0 +1,18 @@
+# gcloud run deploy --source . で除外するファイル
+# .env.local は Cloud Build に含める（Vite ビルド時に必要）
+
+.git
+.claude
+.envrc
+node_modules
+dist
+
+# 開発用ファイル
+*.md
+docs/
+.vscode/
+.idea/
+
+# Git関連
+.gitignore
+.gitattributes
