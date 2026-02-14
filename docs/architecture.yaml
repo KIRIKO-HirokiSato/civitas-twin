@@ -1,0 +1,240 @@
+# Civitas Twin M1.2 Pro v7 — System Architecture
+# This file is the single source of truth for the system's structure.
+# Last updated: 2026-02-14
+
+project:
+  name: Civitas Twin M1.2 Professional Edition v7
+  description: >
+    5,000件のシードペルソナDNAと5つの行動心理理論を統合し、
+    100万人規模の社会反応を精密にシミュレートする高度社会推論エンジン。
+    リアルタイムの外部情勢をGrounding検索で取り込み、
+    監査品質の戦略レポートを生成する。
+  version: "1.2.0"
+  repository: https://github.com/KIRIKO-HirokiSato/civitas-twin
+
+# ---------------------------------------------------------------------------
+# GCP
+# ---------------------------------------------------------------------------
+gcp:
+  project_id: gen-lang-client-0491126700
+  project_number: "902796884296"
+  region: asia-northeast1
+  account: h.sato@kiriko.tech
+  local_config:
+    tool: direnv
+    config_name: kiriko-civitas
+    envrc: export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+components:
+
+  # ----- Frontend SPA (Client-Side) -----
+  frontend:
+    type: single-page-application
+    runtime: browser
+    framework: React 19.2
+    language: TypeScript 5.8
+    build_tool: Vite 6.2
+    build_target: ES2022
+    entry_point: index.tsx
+    output_dir: dist/
+
+    modules:
+      app:
+        file: App.tsx
+        responsibility: >
+          UIレイアウト、シミュレーション実行フロー、履歴管理、
+          Deep Diveインタビューチャット、PDFエクスポート
+
+      gemini_service:
+        file: geminiService.ts
+        responsibility: >
+          Gemini API呼び出しのラッパー。
+          シミュレーション推論 (runSimulation) と
+          ペルソナ対話セッション (startInterviewSession) を提供。
+        exports:
+          - name: runSimulation
+            description: ニュース/施策を入力し、社会反応レポートを生成
+          - name: startInterviewSession
+            description: 特定セグメントのペルソナとしてチャットセッションを開始
+
+      persona_data:
+        file: personaData.ts
+        responsibility: >
+          5,000件のシードペルソナDNA定義とアーキタイプ分布。
+          100万人への暫定投影ロジックを含む。
+        data:
+          seed_n: 5000
+          population_n: 1_000_000
+          data_version: "1.3"
+          validated_date: "2025-12-22"
+          source: Persona(JPN)-5000.csv
+          archetype_dimensions:
+            - Schwartz value theory
+            - TPB (Theory of Planned Behavior)
+            - Prospect Theory
+            - ELM (Elaboration Likelihood Model)
+            - Zaller RAS model
+
+      types:
+        file: types.ts
+        responsibility: TypeScript型定義 (SimulationParams, SimulationResult, ChatMessage, HistoryItem)
+
+    ui_dependencies:
+      - name: react-markdown
+        version: "^10.1.0"
+        purpose: レポートのMarkdownレンダリング
+      - name: remark-gfm
+        version: "^4.0.0"
+        purpose: GitHub Flavored Markdown (テーブル等)
+      - name: rehype-raw
+        version: "^7.0.0"
+        purpose: Markdown内HTMLのパース
+      - name: tailwindcss
+        source: CDN (cdn.tailwindcss.com)
+        purpose: ユーティリティファーストCSS
+      - name: html2pdf.js
+        version: "0.10.1"
+        source: CDN (cdnjs.cloudflare.com)
+        purpose: レポートのPDFエクスポート
+      - name: Plus Jakarta Sans
+        source: Google Fonts
+        purpose: UIフォント
+
+  # ----- Cloud Run (Serving) -----
+  cloud_run:
+    service_name: civitas-twin
+    url: https://civitas-twin-902796884296.asia-northeast1.run.app
+    region: asia-northeast1
+    port: 8080
+    authentication: none (invoker IAM check disabled)
+    container:
+      base_image: nginx:alpine
+      content: Viteビルド済み静的ファイル (/usr/share/nginx/html)
+      config: nginx.conf → /etc/nginx/conf.d/default.conf
+    scaling:
+      min_instances: 0  # scale to zero
+      max_instances: default
+
+  # ----- Gemini API (AI) -----
+  gemini_api:
+    provider: Google Cloud
+    model: gemini-3-pro-preview
+    sdk: "@google/genai ^1.34.0"
+    invocation: client-side (browser → Gemini API 直接)
+    authentication: API Key (build時にViteが埋め込み)
+    features:
+      - name: generateContent
+        purpose: 社会反応シミュレーション推論
+        config:
+          temperature: 0.1
+          tools: [googleSearch]
+      - name: chats.create
+        purpose: Deep Diveインタビューセッション
+        config:
+          temperature: 0.7
+          tools: []
+    grounding:
+      tool: Google Search
+      purpose: リアルタイムの外部情勢（6観点）取得と出典URL付与
+
+# ---------------------------------------------------------------------------
+# Data Flow
+# ---------------------------------------------------------------------------
+data_flows:
+
+  simulation:
+    description: ユーザーがニュース/施策を入力 → 社会反応レポート生成
+    steps:
+      - from: user
+        to: frontend
+        data: newsText, purpose, region
+      - from: frontend
+        to: gemini_api
+        data: プロンプト (ペルソナDNA + 心理理論 + 入力テキスト)
+        protocol: HTTPS (REST)
+      - from: gemini_api
+        to: google_search
+        data: 外部情勢の検索クエリ
+        note: Grounding toolとして自動実行
+      - from: gemini_api
+        to: frontend
+        data: レポートMarkdown + groundingUrls
+      - from: frontend
+        to: user
+        data: レンダリング済みレポート (HTML/PDF)
+
+  deep_dive_interview:
+    description: レポート生成後、特定セグメントのペルソナとリアルタイム対話
+    steps:
+      - from: user
+        to: frontend
+        data: セグメント選択 (High/Mid/Low) + 質問テキスト
+      - from: frontend
+        to: gemini_api
+        data: チャットメッセージ (セッション維持)
+        note: startInterviewSessionで生成したChatオブジェクト経由
+      - from: gemini_api
+        to: frontend
+        data: ペルソナとしての応答テキスト
+      - from: frontend
+        to: user
+        data: チャットUI上の応答表示
+
+# ---------------------------------------------------------------------------
+# Build & Deploy Pipeline
+# ---------------------------------------------------------------------------
+build_pipeline:
+
+  local_development:
+    command: npm run dev
+    port: 3000
+    host: 0.0.0.0
+    env_file: .env.local
+
+  production_build:
+    command: npm run build
+    output: dist/
+    env_injection:
+      mechanism: Vite define plugin (build-time replacement)
+      variables:
+        - name: process.env.API_KEY
+          source: GEMINI_API_KEY in .env.local
+        - name: process.env.GEMINI_API_KEY
+          source: GEMINI_API_KEY in .env.local
+
+  container:
+    dockerfile: Dockerfile
+    stages:
+      - name: build
+        base: node:22-slim
+        steps: [npm ci, npm run build]
+      - name: serve
+        base: nginx:alpine
+        steps: [COPY dist → nginx html, COPY nginx.conf]
+
+  cloud_deploy:
+    method: gcloud run deploy --source .
+    services_required:
+      - run.googleapis.com
+      - cloudbuild.googleapis.com
+      - artifactregistry.googleapis.com
+    build_service: Cloud Build
+    image_registry: Artifact Registry (asia-northeast1-docker.pkg.dev)
+
+# ---------------------------------------------------------------------------
+# Security Notes
+# ---------------------------------------------------------------------------
+security:
+  api_key_exposure: >
+    GEMINI_API_KEY はViteのビルド時にクライアントJSへ埋め込まれるため、
+    ブラウザのDevToolsから閲覧可能。本番運用時はバックエンドプロキシ経由に
+    変更すべきだが、ハッカソン短期用途では許容範囲として運用。
+  cloud_run_auth: >
+    組織ポリシー (iam.allowedPolicyMemberDomains) により allUsers IAMバインディング
+    不可のため、--no-invoker-iam-check で公開。
+  secrets_in_repo: >
+    .env.local は .gitignore 対象。ただし .dockerignore からは除外し、
+    Cloud Build時にコンテナ内でViteが読み取る設計。
