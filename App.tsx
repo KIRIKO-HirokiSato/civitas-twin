@@ -299,7 +299,7 @@ const App: React.FC = () => {
     setIsChatLoading(true);
 
     try {
-      const response: GenerateContentResponse = await chatInstanceRef.current.sendMessage({ message: userMsg });
+      const response: GenerateContentResponse = await chatInstanceRef.current.sendMessage(userMsg);
       setChatMessages(prev => [...prev, { role: 'model', text: response.text || "", timestamp: new Date().toLocaleTimeString() }]);
     } catch (e) {
       console.error(e);

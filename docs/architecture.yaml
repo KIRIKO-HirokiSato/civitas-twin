@@ -9,9 +9,9 @@ project:
     100万人規模の社会反応を精密にシミュレートする高度社会推論エンジン。
     リアルタイムの外部情勢をGrounding検索で取り込み、
     監査品質の戦略レポートを生成する。
-  version: "1.2.1"
+  version: "1.3.1"
   repository: https://github.com/KIRIKO-HirokiSato/civitas-twin
-  last_major_update: "2026-02-14 (セキュリティ改善: バックエンドプロキシ実装)"
+  last_major_update: "2026-02-14 (チャットインタフェース修正完了、リビジョン civitas-twin-00023-wpk)"
 
 # ---------------------------------------------------------------------------
 # GCP
@@ -177,8 +177,8 @@ components:
       - name: dotenv
         version: "^17.3.1"
       - name: "@google/genai"
-        version: "^1.34.0"
-        purpose: Gemini API呼び出し
+        version: "^1.41.0"
+        purpose: Vertex AI + Gemini 3 Pro Preview 呼び出し
 
   # ----- Cloud Run (Serving) -----
   cloud_run:
@@ -187,32 +187,33 @@ components:
     region: asia-northeast1
     port: 8080
     authentication: none (invoker IAM check disabled)
+    current_revision: civitas-twin-00023-wpk
     container:
       base_image: node:22-slim
       server: Express (server/index.js)
       static_files: Viteビルド済み (dist/) を Express.static で配信
       spa_fallback: すべてのルート → index.html (app.use)
     environment_variables:
-      - name: GEMINI_API_KEY
-        source: Cloud Run 環境変数（--set-env-vars）
-        purpose: Gemini API認証
       - name: NODE_ENV
         value: production
         purpose: エラーメッセージ制御、CORS設定
       - name: PORT
         value: 8080 (デフォルト)
+    authentication:
+      method: Application Default Credentials (ADC)
+      note: Cloud Run サービスアカウントが Vertex AI へのアクセス権を持つ
     scaling:
       min_instances: 0  # scale to zero
       max_instances: default
 
   # ----- Gemini API (AI) -----
   gemini_api:
-    provider: Google Cloud
+    provider: Google Cloud Vertex AI
     model: gemini-3-pro-preview
-    sdk: "@google/genai ^1.34.0"
-    invocation: server-side (frontend → Express backend → Gemini API)
-    authentication: API Key (Cloud Run 環境変数から読み取り)
-    security: APIキーはサーバーサイドのみで保持、クライアントには非露出
+    sdk: "@google/genai ^1.41.0"
+    invocation: server-side (frontend → Express backend → Vertex AI Gemini API via @google/genai)
+    authentication: Application Default Credentials (ADC)
+    security: ADC によるサーバーサイド認証、クライアントには非露出
     features:
       - name: ai.models.generateContent
         purpose: 社会反応シミュレーション推論
@@ -278,7 +279,7 @@ data_flows:
       - from: backend
         to: gemini_api
         data: チャットメッセージ (ai.chats.create 経由)
-        note: 履歴管理は現在未実装（各リクエスト独立）
+        note: 履歴はフロントエンド側で管理され、各リクエストに含まれる
       - from: gemini_api
         to: backend
         data: ペルソナとしての応答テキスト
@@ -305,7 +306,7 @@ build_pipeline:
     output: dist/
     note: >
       APIキーはビルド時に埋め込まれない（v1.2.1以降）。
-      バックエンドが環境変数から読み取る。
+      バックエンドが Application Default Credentials (ADC) で認証（v1.3.0以降）。
 
   container:
     dockerfile: Dockerfile
@@ -330,7 +331,7 @@ build_pipeline:
       --allow-unauthenticated
       --port=8080
       --project=gen-lang-client-0491126700
-      --set-env-vars="GEMINI_API_KEY=xxx,NODE_ENV=production"
+      --set-env-vars="NODE_ENV=production"
     post_deploy: >
       export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas &&
       gcloud run services update civitas-twin
@@ -338,8 +339,8 @@ build_pipeline:
       --project=gen-lang-client-0491126700
       --no-invoker-iam-check
     note: >
-      GEMINI_API_KEY と NODE_ENV は環境変数として設定必須。
       NODE_ENV=production によりエラーメッセージ詳細が非表示になる。
+      認証は Application Default Credentials (ADC) を使用（v1.3.0以降）。
     services_required:
       - run.googleapis.com
       - cloudbuild.googleapis.com
@@ -381,9 +382,9 @@ gcp_setup:
 # ---------------------------------------------------------------------------
 security:
   api_key_protection: >
-    ✅ v1.2.1 で解決済み。
-    GEMINI_API_KEY はサーバーサイド（Express）のみで保持。
-    Cloud Run 環境変数から読み取り、クライアントJSには含まれない。
+    ✅ v1.3.0 で @google/genai + ADC に移行完了。
+    Vertex AI を使用し、Application Default Credentials で認証。
+    APIキーは不要となり、クライアントへの露出リスクが完全に解消された。
 
   backend_security:
     cors:
@@ -420,4 +421,52 @@ security:
 
   secrets_in_repo: >
     .env.local は .gitignore 対象。
-    Cloud Run デプロイ時は --set-env-vars で環境変数を設定。
+    Cloud Run デプロイ時は Application Default Credentials (ADC) で認証（v1.3.0以降）。
+    APIキーの管理は不要。
+
+# ---------------------------------------------------------------------------
+# Changelog
+# ---------------------------------------------------------------------------
+changelog:
+  v1.3.1:
+    date: "2026-02-14"
+    changes:
+      - type: bugfix
+        component: frontend
+        description: >
+          App.tsx:302 の sendMessage 呼び出しを修正。
+          { message: userMsg } → userMsg に変更し、
+          サーバー側の型検証エラーを解消。
+      - type: bugfix
+        component: frontend
+        description: >
+          geminiService.ts:204-208 のレスポンス形式を修正。
+          { response: { text: () => ... } } → { text: ... } に変更し、
+          チャットUIへのレスポンス表示を修正。
+      - type: deploy
+        revision: civitas-twin-00023-wpk
+        description: フロントエンド修正をデプロイ
+
+  v1.3.0:
+    date: "2026-02-14"
+    changes:
+      - type: feature
+        component: backend
+        description: >
+          @google-cloud/vertexai → @google/genai へのSDK移行完了。
+          Gemini 3 Pro Preview モデルに対応。
+      - type: feature
+        component: backend
+        description: >
+          Application Default Credentials (ADC) 認証に移行。
+          APIキーのクライアントサイド露出リスクを完全解消。
+      - type: bugfix
+        component: backend
+        description: >
+          /api/generate エンドポイントで contents 配列に
+          role フィールドを追加し、500エラーを解消。
+      - type: bugfix
+        component: backend
+        description: >
+          express-rate-limit の trust proxy 検証エラーを
+          validate: { trustProxy: false } で解消。
