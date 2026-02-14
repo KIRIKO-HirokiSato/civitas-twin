@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -15,8 +16,27 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Middleware
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+const allowedOrigins = [
+  'https://civitas-twin-902796884296.asia-northeast1.run.app',
+];
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.push('http://localhost:3000', 'http://localhost:8080');
+}
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST'],
+}));
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+app.use('/api/', apiLimiter);
+
+app.use(express.json({ limit: '1mb' }));
 
 // Gemini API client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -54,7 +74,7 @@ app.post('/api/generate', async (req, res) => {
     console.error('Gemini API Error:', error);
     res.status(500).json({
       error: 'Failed to generate content',
-      details: error.message
+      ...(process.env.NODE_ENV !== 'production' && { details: error.message }),
     });
   }
 });
@@ -78,7 +98,7 @@ app.post('/api/chat/start', async (req, res) => {
     console.error('Chat Start Error:', error);
     res.status(500).json({
       error: 'Failed to start chat',
-      details: error.message
+      ...(process.env.NODE_ENV !== 'production' && { details: error.message }),
     });
   }
 });
@@ -120,7 +140,7 @@ app.post('/api/chat/send', async (req, res) => {
     console.error('Chat Send Error:', error);
     res.status(500).json({
       error: 'Failed to send message',
-      details: error.message
+      ...(process.env.NODE_ENV !== 'production' && { details: error.message }),
     });
   }
 });
