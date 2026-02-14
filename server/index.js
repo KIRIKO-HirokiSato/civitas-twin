@@ -15,6 +15,9 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') });
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Trust proxy for Cloud Run (behind load balancer)
+app.set('trust proxy', true);
+
 // Middleware
 const allowedOrigins = [
   'https://civitas-twin-902796884296.asia-northeast1.run.app',
@@ -33,13 +36,19 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
+  validate: { trustProxy: false },
 });
 app.use('/api/', apiLimiter);
 
 app.use(express.json({ limit: '1mb' }));
 
-// Gemini API client
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Vertex AI client via @google/genai SDK (uses Application Default Credentials)
+// IMPORTANT: Gemini 3 系モデルは global エンドポイントのみ対応
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GCP_PROJECT || 'gen-lang-client-0491126700',
+  location: 'global',  // Gemini 3 系は asia-northeast1 では利用不可
+});
 
 // API endpoint: Generate content
 app.post('/api/generate', async (req, res) => {
@@ -50,19 +59,20 @@ app.post('/api/generate', async (req, res) => {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
 
-    // Use ai.models.generateContent() API (same as frontend)
-    const result = await ai.models.generateContent({
+    // Ensure all content items have a role field (required by Vertex AI API)
+    const normalizedContents = contents.map((item) => ({
+      role: item.role || 'user',
+      parts: item.parts,
+    }));
+
+    const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents,
+      contents: normalizedContents,
       config: {
-        systemInstruction: typeof systemInstruction === 'string'
-          ? { parts: [{ text: systemInstruction }] }
-          : systemInstruction,
+        systemInstruction,
         ...generationConfig,
       },
     });
-
-    const response = result;
 
     res.json({
       text: response.text || '',
@@ -71,7 +81,7 @@ app.post('/api/generate', async (req, res) => {
         .map((chunk) => ({ title: chunk.web.title, uri: chunk.web.uri })) || []
     });
   } catch (error) {
-    console.error('Gemini API Error:', error);
+    console.error('Vertex AI Error:', error);
     res.status(500).json({
       error: 'Failed to generate content',
       ...(process.env.NODE_ENV !== 'production' && { details: error.message }),
@@ -108,36 +118,63 @@ app.post('/api/chat/send', async (req, res) => {
   try {
     const { systemInstruction, history, message } = req.body;
 
+    // Debug logging
+    console.log('📩 Chat send request:', {
+      hasSystemInstruction: !!systemInstruction,
+      systemInstructionLength: systemInstruction?.length,
+      historyLength: history?.length,
+      messageType: typeof message,
+      messageValue: message,
+    });
+
     if (!systemInstruction || !message) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
 
-    // Create chat using ai.chats.create() API
-    const chat = await ai.chats.create({
-      model: 'gemini-3-pro-preview',
-      config: {
-        systemInstruction: typeof systemInstruction === 'string'
-          ? systemInstruction
-          : systemInstruction,
-        temperature: 0.7,
-      },
-    });
-
-    // If history exists, restore it (simplified - history management should be improved)
-    if (history && history.length > 0) {
-      for (const msg of history) {
-        // Skip for now - proper history management would need session storage
-      }
+    // Validate message type
+    if (typeof message !== 'string' && !Array.isArray(message)) {
+      console.error('❌ Invalid message type:', typeof message, message);
+      return res.status(400).json({ error: 'Message must be a string or array of parts' });
     }
 
-    const result = await chat.sendMessage(message);
+    // Normalize history to ensure all items have role field and valid parts structure
+    const normalizedHistory = (history || []).map((item) => {
+      // Ensure parts is an array
+      let parts = item.parts;
+      if (!Array.isArray(parts)) {
+        parts = typeof parts === 'string' ? [{ text: parts }] : [parts];
+      }
+
+      return {
+        role: item.role || 'user',
+        parts: parts,
+      };
+    });
+
+    // Create chat session with @google/genai SDK
+    const chat = ai.chats.create({
+      model: 'gemini-3-pro-preview',
+      config: {
+        systemInstruction,
+        temperature: 0.7,
+      },
+      history: normalizedHistory,
+    });
+
+    // sendMessage expects SendMessageParameters object with message property
+    // message can be: string | Part | Part[]
+    const response = await chat.sendMessage({ message });
 
     res.json({
-      text: result.text || result.response?.text() || '',
+      text: response.text || '',
       role: 'model'
     });
   } catch (error) {
     console.error('Chat Send Error:', error);
+    // Log full error details for debugging
+    if (error.response?.data) {
+      console.error('API Error Details:', JSON.stringify(error.response.data, null, 2));
+    }
     res.status(500).json({
       error: 'Failed to send message',
       ...(process.env.NODE_ENV !== 'production' && { details: error.message }),
@@ -156,5 +193,5 @@ app.use((req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
   console.log(`📡 API endpoint: http://0.0.0.0:${PORT}/api/generate`);
-  console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '✓ Loaded' : '✗ Missing'}`);
+  console.log(`🤖 Vertex AI (@google/genai): Project ${process.env.GCP_PROJECT || 'gen-lang-client-0491126700'}, Location global`);
 });

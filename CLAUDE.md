@@ -20,7 +20,7 @@ export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && gcloud ...
 
 ## デプロイ
 
-Cloud Run へのデプロイ（**重要**: 環境変数 `GEMINI_API_KEY` の設定が必須）:
+Cloud Run へのデプロイ（Vertex AI は Application Default Credentials を使用）:
 
 ```bash
 export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
@@ -29,8 +29,7 @@ gcloud run deploy civitas-twin \
   --region=asia-northeast1 \
   --allow-unauthenticated \
   --port=8080 \
-  --project=gen-lang-client-0491126700 \
-  --set-env-vars="GEMINI_API_KEY=YOUR_API_KEY_HERE"
+  --project=gen-lang-client-0491126700
 ```
 
 **初回デプロイ後**、組織ポリシーにより `allUsers` の IAM バインディングが拒否されるため、
@@ -44,34 +43,28 @@ gcloud run services update civitas-twin \
   --no-invoker-iam-check
 ```
 
-**環境変数の更新のみ**（コード変更なし）:
-
-```bash
-export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
-gcloud run services update civitas-twin \
-  --region=asia-northeast1 \
-  --project=gen-lang-client-0491126700 \
-  --set-env-vars="GEMINI_API_KEY=YOUR_NEW_API_KEY"
-```
-
 **Service URL**: https://civitas-twin-902796884296.asia-northeast1.run.app
+
+**認証方式**: Vertex AI は Cloud Run のサービスアカウント（Application Default Credentials）を使用。
+APIキーは不要。
 
 ## 環境変数
 
-### アーキテクチャ変更（セキュリティ改善済み）
+### アーキテクチャ変更（Vertex AI 移行済み）
 
-**v1.2以降**: APIキーはバックエンド（Express）で管理され、クライアントサイドには露出しない。
+**v1.3以降**: Vertex AI を使用し、Application Default Credentials (ADC) で認証。
+APIキーは不要。
 
-| 環境 | 設定方法 |
+| 環境 | 認証方法 |
 |------|---------|
-| **ローカル開発** | `.env.local` ファイル（`GEMINI_API_KEY=xxx`） |
-| **Cloud Run本番** | `--set-env-vars` フラグで環境変数を設定 |
+| **ローカル開発** | `gcloud auth application-default login` |
+| **Cloud Run本番** | サービスアカウント（自動）|
 
 ### ローカル開発
 
 ```bash
-# .env.local を作成
-echo "GEMINI_API_KEY=your_api_key_here" > .env.local
+# Application Default Credentials を設定
+gcloud auth application-default login
 
 # 開発サーバー起動（フロントエンド）
 npm run dev
@@ -83,16 +76,10 @@ npm start
 
 ### Cloud Run 本番環境
 
-環境変数は **デプロイ時に `--set-env-vars` で設定**。`.env.local` は Cloud Build にアップロードされない。
+Cloud Run のデフォルトサービスアカウントが自動的に Vertex AI へのアクセス権限を持つ。
+環境変数の設定は不要。
 
-```bash
-# 環境変数を指定してデプロイ
-gcloud run deploy civitas-twin \
-  --source . \
-  --set-env-vars="GEMINI_API_KEY=your_api_key_here"
-```
-
-**重要**: 過去のバージョンとは異なり、`.gcloudignore` から `.env.local` を除外する必要はなくなった（バックエンドが環境変数を使用するため）。
+**重要**: `.env.local` は不要になったが、削除せずに `.gitignore` で管理することを推奨（将来の拡張用）。
 
 ## アーキテクチャ詳細
 
@@ -101,32 +88,69 @@ gcloud run deploy civitas-twin \
 
 ---
 
+## Vertex AI - Gemini 3 系モデル情報
+
+### 利用可能なモデル
+
+| モデル名 | API 指定文字列 | ステータス | 用途 |
+|---------|--------------|----------|------|
+| Gemini 3 Pro | `gemini-3-pro-preview` | Public Preview | 高度な推論、複雑なエージェントワークフロー、コーディング |
+| Gemini 3 Flash | `gemini-3-flash-preview` | Public Preview | 複雑なマルチモーダル理解、エージェントワークフロー、コスト最適化 |
+
+### ⚠️ 重要: リージョン制限
+
+**Gemini 3 系モデルはグローバルエンドポイントのみ対応**
+
+- asia-northeast1（東京）では利用不可
+- **location を `global` に設定する必要があります**
+
+```javascript
+const vertexAI = new VertexAI({
+  project: 'gen-lang-client-0491126700',
+  location: 'global',  // asia-northeast1 では動作しません
+});
+```
+
+### モデル仕様
+
+- **入力トークン上限**: 1,048,576 (1M)
+- **出力トークン上限**: 65,536 (64K)
+- **知識カットオフ**: 2025年1月
+- **マルチモーダル対応**: テキスト、画像、音声、動画、PDF、コード
+
+### 必要な IAM ロール
+
+- `roles/aiplatform.user` (推奨)
+- 主要権限: `aiplatform.endpoints.predict`
+
+### 参考リンク
+
+- [Gemini 3 Pro Documentation](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-pro)
+- [Gemini 3 Flash Documentation](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-flash)
+- [Vertex AI Locations](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations)
+
+---
+
 ## トラブルシューティング
 
 ### 「推論エンジンが停止しました」エラーが表示される
 
-**原因**: バックエンドが Gemini API キーを取得できていない。
+**原因**: バックエンドが Vertex AI にアクセスできていない。
 
 **診断方法（ローカル開発）**:
 ```bash
-# .env.local が存在するか確認
-cat .env.local
+# Application Default Credentials が設定されているか確認
+gcloud auth application-default print-access-token
 
 # サーバーログを確認
 npm start
-# 期待: 🔑 Gemini API Key: ✓ Loaded
-# NG:   🔑 Gemini API Key: ✗ Missing
+# 期待: 🤖 Vertex AI: Project gen-lang-client-0491126700, Location asia-northeast1
 ```
 
 **診断方法（Cloud Run本番）**:
 ```bash
-# 環境変数が設定されているか確認
-gcloud run services describe civitas-twin \
-  --region=asia-northeast1 \
-  --project=gen-lang-client-0491126700 \
-  --format="value(spec.template.spec.containers[0].env)"
-
 # ログを確認
+export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
 gcloud run services logs read civitas-twin \
   --region=asia-northeast1 \
   --project=gen-lang-client-0491126700 \
@@ -134,12 +158,12 @@ gcloud run services logs read civitas-twin \
 ```
 
 **解決手順（ローカル）**:
-1. `.env.local` に正しい `GEMINI_API_KEY` が設定されているか確認
+1. Application Default Credentials を設定: `gcloud auth application-default login`
 2. サーバーを再起動: `npm start`
 
 **解決手順（Cloud Run）**:
-1. 環境変数を設定してデプロイ（デプロイコマンドは上記参照）
-2. デプロイ完了後、ログを確認
+1. サービスアカウントに Vertex AI 権限があるか確認
+2. ログで詳細なエラーメッセージを確認
 
 ### gcloud 認証エラー
 
@@ -156,35 +180,44 @@ gcloud auth login
 
 ## セキュリティ
 
-### APIキー管理（✅ 改善済み）
+### 認証管理（✅ Vertex AI 移行済み）
 
-**v1.2以降**: バックエンドプロキシを実装し、APIキーのクライアントサイド露出を解消。
+**v1.3以降**: Vertex AI + Application Default Credentials (ADC) を使用し、
+APIキーのクライアントサイド露出リスクを根本的に解消。
 
 #### 実装済みのセキュリティ対策
 
 1. **✅ バックエンドプロキシ**:
    - Express サーバーが `/api/generate`, `/api/chat/send` エンドポイントを提供
-   - Gemini API 呼び出しはサーバーサイドのみで実行
-   - フロントエンドからは直接 Gemini API にアクセスしない
+   - Vertex AI 呼び出しはサーバーサイドのみで実行
+   - フロントエンドからは直接 Vertex AI にアクセスしない
 
-2. **✅ 環境変数管理**:
-   - APIキーは Cloud Run の環境変数として管理
-   - クライアントサイドのJSバンドルには含まれない
-   - ビルド成果物確認: `grep "AIzaSy" dist/assets/*.js` → 出力なし
+2. **✅ サービスアカウント認証**:
+   - Cloud Run はデフォルトサービスアカウントで Vertex AI にアクセス
+   - APIキー不要（ADCを使用）
+   - クライアントサイドのJSバンドルには一切の認証情報が含まれない
 
 3. **✅ CORS設定**:
-   - Express で CORS を有効化（必要に応じて制限可能）
+   - 本番URL (https://civitas-twin-902796884296.asia-northeast1.run.app) のみ許可
+   - 開発時は localhost:3000/8080 も許可
+
+4. **✅ レート制限**:
+   - `/api/*` エンドポイントに15分あたり50リクエストの制限
+   - DDoS攻撃・API枯渇攻撃対策
+
+5. **✅ エラーハンドリング**:
+   - 本番環境では error.message を返さず、汎用エラーメッセージのみ返却
+   - 内部構成の漏洩を防止
 
 #### 今後の改善検討項目（本番運用前）
 
 - **認証・認可の実装**: Firebase Authentication 等でユーザー認証
-- **レート制限**: API呼び出し頻度の制限（DDoS対策）
-- **Secret Manager統合**: より高度なシークレット管理（現状は環境変数で十分）
+- **より細かいレート制限**: ユーザー単位、セッション単位の制限
 
 #### セキュリティ検証コマンド
 
 ```bash
-# ビルド成果物にAPIキーが含まれていないことを確認
+# ビルド成果物に認証情報が含まれていないことを確認
 npm run build
 grep -q "AIzaSy" dist/assets/*.js && echo "⚠️ APIキー検出" || echo "✅ セキュア"
 ```
