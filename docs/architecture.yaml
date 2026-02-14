@@ -216,13 +216,55 @@ build_pipeline:
         steps: [COPY dist → nginx html, COPY nginx.conf]
 
   cloud_deploy:
-    method: gcloud run deploy --source .
+    command: >
+      export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas &&
+      gcloud run deploy civitas-twin
+      --source .
+      --region=asia-northeast1
+      --allow-unauthenticated
+      --port=8080
+      --project=gen-lang-client-0491126700
+    post_deploy: >
+      export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas &&
+      gcloud run services update civitas-twin
+      --region=asia-northeast1
+      --project=gen-lang-client-0491126700
+      --no-invoker-iam-check
     services_required:
       - run.googleapis.com
       - cloudbuild.googleapis.com
       - artifactregistry.googleapis.com
     build_service: Cloud Build
     image_registry: Artifact Registry (asia-northeast1-docker.pkg.dev)
+
+# ---------------------------------------------------------------------------
+# GCP IAM & Enabled APIs
+# ---------------------------------------------------------------------------
+gcp_setup:
+  description: >
+    初回セットアップ時に実施済み。再セットアップが必要な場合はここを参照。
+
+  enabled_apis:
+    - run.googleapis.com
+    - cloudbuild.googleapis.com
+    - artifactregistry.googleapis.com
+
+  iam_bindings:
+    # Cloud Build のデフォルトSAに付与済みのロール
+    service_account: 902796884296-compute@developer.gserviceaccount.com
+    roles:
+      - role: roles/storage.admin
+        reason: Cloud Build がソースを Cloud Storage に読み書きするため
+      - role: roles/artifactregistry.writer
+        reason: ビルドしたDockerイメージを Artifact Registry にプッシュするため
+      - role: roles/logging.logWriter
+        reason: Cloud Build のビルドログを Cloud Logging に出力するため
+
+  org_policy_constraints:
+    - constraint: iam.allowedPolicyMemberDomains
+      impact: >
+        allUsers / allAuthenticatedUsers の IAMバインディングがブロックされる。
+        Cloud Run を公開するには --no-invoker-iam-check を使用する必要がある。
 
 # ---------------------------------------------------------------------------
 # Security Notes
