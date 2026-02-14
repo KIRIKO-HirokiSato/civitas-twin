@@ -1,7 +1,10 @@
 
-import { GoogleGenAI, GenerateContentResponse, Chat } from "@google/genai";
+import { Chat } from "@google/genai";
 import { SimulationParams } from "./types";
 import { PERSONA_SUMMARY, PERSONA_REPRESENTATIVE_SAMPLES } from "./personaData";
+
+// バックエンドAPIのエンドポイント（開発時はlocalhost、本番時は同一オリジン）
+const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:8080' : '';
 
 const fetchWithRetry = async (fn: () => Promise<any>, retries = 2, delay = 2000): Promise<any> => {
   try {
@@ -22,7 +25,6 @@ const sanitizeOutput = (text: string): string => {
 };
 
 export const runSimulation = async (params: SimulationParams) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const snapshotId = `CT-S${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
   
   const systemInstruction = `
@@ -99,26 +101,36 @@ Snapshot ID: ${snapshotId}
 `;
 
   const callApi = async () => {
-    return await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: [{ parts: [{ text: promptText }] }],
-      config: {
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        tools: [{ googleSearch: {} }],
-        temperature: 0.1,
+    const response = await fetch(`${API_BASE_URL}/api/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        systemInstruction,
+        contents: [{ parts: [{ text: promptText }] }],
+        generationConfig: {
+          tools: [{ googleSearch: {} }],
+          temperature: 0.1,
+        },
+      }),
     });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.details || error.error || 'API call failed');
+    }
+
+    return await response.json();
   };
 
   try {
-    const response: GenerateContentResponse = await fetchWithRetry(callApi);
+    const response = await fetchWithRetry(callApi);
     const rawText = sanitizeOutput(response.text || "");
 
     return {
       rawText,
-      groundingUrls: response.candidates?.[0]?.groundingMetadata?.groundingChunks
-        ?.filter((chunk: any) => chunk.web)
-        .map((chunk: any) => ({ title: chunk.web.title, uri: chunk.web.uri })),
+      groundingUrls: response.groundingUrls || [],
       snapshotId
     };
   } catch (error: any) {
@@ -128,15 +140,14 @@ Snapshot ID: ${snapshotId}
 };
 
 /**
- * 特定のセグメント（High/Mid/Low）になりきって対話を行うチャットセッションを開始する
+ * 特定のセグメント（High/Mid/Low）になりきって対話を行うチャットセッション用のハンドラ
+ * バックエンドAPIを使用した実装に変更
  */
 export const startInterviewSession = async (
   segment: string, // "High", "Mid", "Low"
   newsText: string,
   reportContext: string
-): Promise<Chat> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
+): Promise<any> => {
   const interviewSystemInstruction = `
 あなたは今生成された社会シミュレーションレポートにおける**『${segment}層』の代表者（集合的ペルソナ）**です。
 AIアシスタントとして振る舞うのではなく、この社会層に属する生身の人間としてインタビューに答えてください。
@@ -162,11 +173,39 @@ Q: なぜ反対なのですか？
 A（High層）: 正直、説明不足にも程がありますよ。こんな一方的なやり方で、私たちの生活が変わるなんて納得できるわけがない。リスクばかり押し付けられている気分です。
 `;
 
-  return ai.chats.create({
-    model: 'gemini-3-pro-preview',
-    config: {
-      systemInstruction: interviewSystemInstruction,
-      temperature: 0.7, // 少し人間味（揺らぎ）を持たせる
+  // バックエンドAPIベースのチャットハンドラを返す
+  return {
+    systemInstruction: interviewSystemInstruction,
+    history: [],
+    sendMessage: async function(message: string) {
+      const response = await fetch(`${API_BASE_URL}/api/chat/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          systemInstruction: this.systemInstruction,
+          history: this.history,
+          message,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.details || error.error || 'Chat API call failed');
+      }
+
+      const result = await response.json();
+
+      // 履歴を更新
+      this.history.push({ role: 'user', parts: [{ text: message }] });
+      this.history.push({ role: 'model', parts: [{ text: result.text }] });
+
+      return {
+        response: {
+          text: () => result.text,
+        },
+      };
     },
-  });
+  };
 };

@@ -20,7 +20,7 @@ export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && gcloud ...
 
 ## デプロイ
 
-Cloud Run へのデプロイ:
+Cloud Run へのデプロイ（**重要**: 環境変数 `GEMINI_API_KEY` の設定が必須）:
 
 ```bash
 export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
@@ -29,11 +29,12 @@ gcloud run deploy civitas-twin \
   --region=asia-northeast1 \
   --allow-unauthenticated \
   --port=8080 \
-  --project=gen-lang-client-0491126700
+  --project=gen-lang-client-0491126700 \
+  --set-env-vars="GEMINI_API_KEY=YOUR_API_KEY_HERE"
 ```
 
-組織ポリシーにより `allUsers` の IAM バインディングが拒否されるため、
-デプロイ後に IAM チェックを無効化する:
+**初回デプロイ後**、組織ポリシーにより `allUsers` の IAM バインディングが拒否されるため、
+IAM チェックを無効化する:
 
 ```bash
 export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
@@ -43,25 +44,55 @@ gcloud run services update civitas-twin \
   --no-invoker-iam-check
 ```
 
+**環境変数の更新のみ**（コード変更なし）:
+
+```bash
+export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas && \
+gcloud run services update civitas-twin \
+  --region=asia-northeast1 \
+  --project=gen-lang-client-0491126700 \
+  --set-env-vars="GEMINI_API_KEY=YOUR_NEW_API_KEY"
+```
+
 **Service URL**: https://civitas-twin-902796884296.asia-northeast1.run.app
 
 ## 環境変数
 
-- `GEMINI_API_KEY`: `.env.local` に定義。Vite がビルド時に `process.env.API_KEY` / `process.env.GEMINI_API_KEY` として埋め込む。
-- `.env.local` は `.gitignore` 対象だが **`.gcloudignore` からは除外**（Cloud Build 時に読み取るため）。
+### アーキテクチャ変更（セキュリティ改善済み）
 
-### 重要: `.gcloudignore` の役割
+**v1.2以降**: APIキーはバックエンド（Express）で管理され、クライアントサイドには露出しない。
 
-`.gcloudignore` が存在しない場合、`gcloud run deploy --source .` は `.gitignore` をフォールバックとして使用する。
-`.gitignore` に `*.local` が含まれているため、`.gcloudignore` がないと **`.env.local` が Cloud Build のコンテキストから除外される**。
+| 環境 | 設定方法 |
+|------|---------|
+| **ローカル開発** | `.env.local` ファイル（`GEMINI_API_KEY=xxx`） |
+| **Cloud Run本番** | `--set-env-vars` フラグで環境変数を設定 |
 
-結果として：
-1. Cloud Build 時に `GEMINI_API_KEY` が undefined になる
-2. Vite ビルドで `process.env.API_KEY` が `void 0` に置換される
-3. ランタイムで "API key must be set" エラーが発生
-4. UI に「推論エンジンが停止しました」と表示される
+### ローカル開発
 
-**`.gcloudignore` は必須ファイル** — 削除しないこと。
+```bash
+# .env.local を作成
+echo "GEMINI_API_KEY=your_api_key_here" > .env.local
+
+# 開発サーバー起動（フロントエンド）
+npm run dev
+
+# または、本番と同じ構成でテスト
+npm run build
+npm start
+```
+
+### Cloud Run 本番環境
+
+環境変数は **デプロイ時に `--set-env-vars` で設定**。`.env.local` は Cloud Build にアップロードされない。
+
+```bash
+# 環境変数を指定してデプロイ
+gcloud run deploy civitas-twin \
+  --source . \
+  --set-env-vars="GEMINI_API_KEY=your_api_key_here"
+```
+
+**重要**: 過去のバージョンとは異なり、`.gcloudignore` から `.env.local` を除外する必要はなくなった（バックエンドが環境変数を使用するため）。
 
 ## アーキテクチャ詳細
 
@@ -74,23 +105,41 @@ gcloud run services update civitas-twin \
 
 ### 「推論エンジンが停止しました」エラーが表示される
 
-**原因**: Gemini API キーが正しく埋め込まれていない。
+**原因**: バックエンドが Gemini API キーを取得できていない。
 
-**診断方法**:
+**診断方法（ローカル開発）**:
 ```bash
-# ビルド成果物にAPIキーが埋め込まれているか確認
-grep -o "AIzaSy[A-Za-z0-9_-]*" dist/assets/index-*.js
+# .env.local が存在するか確認
+cat .env.local
 
-# 期待: AIzaSyCr4ct... のような実際のキー
-# NG: 出力なし、または "PLACEHOLDER_API_KEY"、"void 0"
+# サーバーログを確認
+npm start
+# 期待: 🔑 Gemini API Key: ✓ Loaded
+# NG:   🔑 Gemini API Key: ✗ Missing
 ```
 
-**解決手順**:
+**診断方法（Cloud Run本番）**:
+```bash
+# 環境変数が設定されているか確認
+gcloud run services describe civitas-twin \
+  --region=asia-northeast1 \
+  --project=gen-lang-client-0491126700 \
+  --format="value(spec.template.spec.containers[0].env)"
+
+# ログを確認
+gcloud run services logs read civitas-twin \
+  --region=asia-northeast1 \
+  --project=gen-lang-client-0491126700 \
+  --limit=50
+```
+
+**解決手順（ローカル）**:
 1. `.env.local` に正しい `GEMINI_API_KEY` が設定されているか確認
-2. `.gcloudignore` が存在するか確認（存在しない場合は作成）
-3. ローカル再ビルド: `npm run build`
-4. ビルド成果物を確認（上記 grep コマンド）
-5. Cloud Run に再デプロイ（デプロイコマンドは上記参照）
+2. サーバーを再起動: `npm start`
+
+**解決手順（Cloud Run）**:
+1. 環境変数を設定してデプロイ（デプロイコマンドは上記参照）
+2. デプロイ完了後、ログを確認
 
 ### gcloud 認証エラー
 
@@ -105,29 +154,37 @@ gcloud auth login
 
 ---
 
-## セキュリティに関する注意
+## セキュリティ
 
-### APIキーのクライアントサイド露出リスク
+### APIキー管理（✅ 改善済み）
 
-現在の設計では、**Gemini API キーがクライアントサイドの JS バンドルにハードコードされる**。
+**v1.2以降**: バックエンドプロキシを実装し、APIキーのクライアントサイド露出を解消。
 
-**リスク**:
-- ブラウザの DevTools でバンドルファイルを閲覧し、APIキーを抽出可能
-- 第三者による不正利用（課金リスク）
-- API キーのローテーションが困難
+#### 実装済みのセキュリティ対策
 
-**現状の位置づけ**:
-- ハッカソン短期用途では許容（`architecture.yaml` に明記）
-- 本番運用や長期運用には **不適切**
+1. **✅ バックエンドプロキシ**:
+   - Express サーバーが `/api/generate`, `/api/chat/send` エンドポイントを提供
+   - Gemini API 呼び出しはサーバーサイドのみで実行
+   - フロントエンドからは直接 Gemini API にアクセスしない
 
-**推奨される改善策**（本番運用前に実施）:
-1. **バックエンドプロキシの追加**:
-   - Cloud Functions または Cloud Run バックエンドサービスを作成
-   - バックエンド側で Gemini API を呼び出し
-   - フロントエンドはバックエンド経由でリクエスト
-2. **環境変数の管理**:
-   - Cloud Run の環境変数または Secret Manager を使用
-   - APIキーをサーバーサイドのみに保持
-3. **認証・認可の実装**:
-   - Firebase Authentication 等でユーザー認証
-   - バックエンドで認証トークンを検証してからAPI呼び出し
+2. **✅ 環境変数管理**:
+   - APIキーは Cloud Run の環境変数として管理
+   - クライアントサイドのJSバンドルには含まれない
+   - ビルド成果物確認: `grep "AIzaSy" dist/assets/*.js` → 出力なし
+
+3. **✅ CORS設定**:
+   - Express で CORS を有効化（必要に応じて制限可能）
+
+#### 今後の改善検討項目（本番運用前）
+
+- **認証・認可の実装**: Firebase Authentication 等でユーザー認証
+- **レート制限**: API呼び出し頻度の制限（DDoS対策）
+- **Secret Manager統合**: より高度なシークレット管理（現状は環境変数で十分）
+
+#### セキュリティ検証コマンド
+
+```bash
+# ビルド成果物にAPIキーが含まれていないことを確認
+npm run build
+grep -q "AIzaSy" dist/assets/*.js && echo "⚠️ APIキー検出" || echo "✅ セキュア"
+```

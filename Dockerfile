@@ -8,10 +8,19 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve
-FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Stage 2: Production
+FROM node:22-slim
+WORKDIR /app
+
+# 本番用の依存関係のみをインストール
+COPY package.json package-lock.json ./
+RUN npm ci --production
+
+# ビルド成果物とサーバーコードをコピー
+COPY --from=build /app/dist ./dist
+COPY server ./server
 
 EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
+
+# 環境変数はCloud Runで設定
+CMD ["node", "server/index.js"]
