@@ -4,7 +4,8 @@
 
 [![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Click_Here-4285F4?style=for-the-badge)](https://civitas-twin-902796884296.asia-northeast1.run.app)
 [![Google Cloud](https://img.shields.io/badge/Google_Cloud-Run-4285F4?logo=googlecloud&style=flat-square)](https://cloud.google.com/run)
-[![Gemini API](https://img.shields.io/badge/Gemini-API-8E75B2?logo=google&style=flat-square)](https://ai.google.dev/)
+[![Vertex AI](https://img.shields.io/badge/Vertex_AI-Gemini_3-8E75B2?logo=google&style=flat-square)](https://cloud.google.com/vertex-ai)
+[![Version](https://img.shields.io/badge/version-1.3.1-blue?style=flat-square)](docs/architecture.yaml)
 
 ---
 
@@ -30,10 +31,12 @@
 | レイヤー | 技術 |
 |---------|------|
 | **フロントエンド** | React 19 + TypeScript + Vite |
-| **AI/ML** | Google Gemini API (gemini-3-pro-preview) |
+| **バックエンド** | Express 5.2 + Node.js 22 |
+| **AI/ML** | Vertex AI + Gemini 3 Pro Preview |
+| **認証** | Application Default Credentials (ADC) |
 | **デプロイ** | Google Cloud Run (Container) |
-| **認証・管理** | GCP Named Configuration (direnv) |
-| **CI/CD** | Cloud Build + gcloud CLI |
+| **環境管理** | direnv + gcloud Named Configuration |
+| **CI/CD** | Cloud Build + Artifact Registry |
 
 ### 3段階の推論プロセス
 
@@ -64,11 +67,11 @@ cd civitas-twin
 # 2. 依存関係をインストール
 npm install
 
-# 3. 環境変数を設定
-echo "GEMINI_API_KEY=your_api_key_here" > .env.local
+# 3. GCP認証を設定（Application Default Credentials）
+gcloud auth application-default login
 
-# 4. 開発サーバーを起動
-npm run dev
+# 4. 開発サーバーを起動（バックエンド + フロントエンド）
+npm start  # ポート8080でExpressサーバーが起動
 ```
 
 ### 本番ビルド
@@ -86,7 +89,8 @@ npm run preview
 
 - gcloud CLI インストール済み
 - GCP プロジェクト作成済み
-- Gemini API キー取得済み
+- Vertex AI API 有効化済み
+- Cloud Run サービスアカウントに `roles/aiplatform.user` 権限付与済み
 
 ### デプロイ手順
 
@@ -97,21 +101,33 @@ gcloud config set account your-email@example.com
 gcloud config set project YOUR_PROJECT_ID
 gcloud config set run/region asia-northeast1
 
-# デプロイ
+# Vertex AI API を有効化
+gcloud services enable aiplatform.googleapis.com
+
+# Cloud Run サービスアカウントに権限付与
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# デプロイ（Application Default Credentials で認証）
 export CLOUDSDK_ACTIVE_CONFIG_NAME=civitas-twin
 gcloud run deploy civitas-twin \
   --source . \
   --region=asia-northeast1 \
   --allow-unauthenticated \
-  --port=8080
+  --port=8080 \
+  --project=YOUR_PROJECT_ID
 
 # IAMチェック無効化（組織ポリシー対応）
 gcloud run services update civitas-twin \
   --region=asia-northeast1 \
+  --project=YOUR_PROJECT_ID \
   --no-invoker-iam-check
 ```
 
-**重要**: `.gcloudignore` は削除しないでください（`.env.local` を Cloud Build に含めるため）
+**重要**:
+- Vertex AI はサービスアカウントの Application Default Credentials (ADC) で認証されます
+- APIキーの設定は不要です
 
 ---
 
@@ -172,40 +188,59 @@ gcloud run services update civitas-twin \
 
 ### よくある問題
 
-**Q: 「推論エンジンが停止しました」エラーが出る**
+**Q: 「Permission denied」エラーが出る**
 
-A: Gemini API キーが正しく埋め込まれていない可能性があります。
+A: Cloud Run サービスアカウントに Vertex AI の権限が付与されていない可能性があります。
 
 ```bash
-# ビルド成果物を確認
-grep -o "AIzaSy[A-Za-z0-9_-]*" dist/assets/index-*.js
+# サービスアカウントの権限を確認
+gcloud projects get-iam-policy YOUR_PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 
-# .env.local の設定を確認
-cat .env.local
+# roles/aiplatform.user が含まれていない場合は付与
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+**Q: ローカル開発で 403 エラーが出る**
+
+A: Application Default Credentials が設定されていない可能性があります。
+
+```bash
+# ADC を設定
+gcloud auth application-default login
+
+# 認証情報を確認
+gcloud auth application-default print-access-token
 ```
 
 ---
 
 ## 🔒 セキュリティ
 
-**v1.2以降**: ✅ **バックエンドプロキシ実装済み** — APIキーのクライアント露出を解消
+**v1.3.0以降**: ✅ **Vertex AI + ADC 認証** — APIキー不要、完全なサーバーサイド認証
 
 ### 実装済みのセキュリティ対策
 
-- ✅ Express サーバーによるバックエンドプロキシ
-- ✅ Gemini API 呼び出しはサーバーサイドのみ
-- ✅ APIキーは環境変数で管理（クライアントバンドルに含まれない）
-- ✅ CORS 設定による適切なアクセス制御
+- ✅ **Application Default Credentials (ADC)** による認証
+- ✅ Vertex AI API 呼び出しはサーバーサイドのみ
+- ✅ APIキー管理が不要（クレデンシャル漏洩リスクゼロ）
+- ✅ Express バックエンドプロキシによる API 抽象化
+- ✅ CORS 設定による本番URL制限
+- ✅ Rate Limiting (15分/50リクエスト)
+- ✅ 本番環境でのエラー詳細非表示
 
-### 検証方法
+### アーキテクチャの進化
 
-```bash
-# ビルド成果物にAPIキーが含まれていないことを確認
-npm run build
-grep -q "AIzaSy" dist/assets/*.js && echo "⚠️ APIキー検出" || echo "✅ セキュア"
-```
+| バージョン | 認証方式 | セキュリティリスク |
+|-----------|---------|------------------|
+| v1.0-1.1 | クライアントサイドAPIキー | ❌ 高リスク（バンドル露出） |
+| v1.2 | バックエンド環境変数 | ⚠️ 中リスク（環境変数管理） |
+| **v1.3** | **Vertex AI + ADC** | ✅ **低リスク（GCP IAM管理）** |
 
-詳細: [CLAUDE.md - セキュリティ](CLAUDE.md#セキュリティ)
+詳細: [CLAUDE.md - セキュリティ](CLAUDE.md#セキュリティに関する注意)
 
 ---
 
