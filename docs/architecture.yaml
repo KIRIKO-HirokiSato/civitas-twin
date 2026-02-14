@@ -9,8 +9,9 @@ project:
     100万人規模の社会反応を精密にシミュレートする高度社会推論エンジン。
     リアルタイムの外部情勢をGrounding検索で取り込み、
     監査品質の戦略レポートを生成する。
-  version: "1.2.0"
+  version: "1.2.1"
   repository: https://github.com/KIRIKO-HirokiSato/civitas-twin
+  last_major_update: "2026-02-14 (セキュリティ改善: バックエンドプロキシ実装)"
 
 # ---------------------------------------------------------------------------
 # GCP
@@ -51,14 +52,15 @@ components:
       gemini_service:
         file: geminiService.ts
         responsibility: >
-          Gemini API呼び出しのラッパー。
+          バックエンドAPI (/api/generate, /api/chat/send) 呼び出しのラッパー。
           シミュレーション推論 (runSimulation) と
           ペルソナ対話セッション (startInterviewSession) を提供。
+          Gemini APIは直接呼ばず、Expressバックエンド経由でアクセス。
         exports:
           - name: runSimulation
-            description: ニュース/施策を入力し、社会反応レポートを生成
+            description: バックエンド /api/generate を呼び出し、社会反応レポートを生成
           - name: startInterviewSession
-            description: 特定セグメントのペルソナとしてチャットセッションを開始
+            description: バックエンド /api/chat/send 経由で特定セグメントのペルソナとチャットセッションを開始
 
       persona_data:
         file: personaData.ts
@@ -103,6 +105,81 @@ components:
         source: Google Fonts
         purpose: UIフォント
 
+  # ----- Backend API (Express) -----
+  backend:
+    type: api-server
+    runtime: Node.js 22
+    framework: Express 5.2
+    language: JavaScript (ES Modules)
+    entry_point: server/index.js
+    port: 8080
+
+    endpoints:
+      - path: /api/generate
+        method: POST
+        purpose: Gemini APIプロキシ - シミュレーション推論
+        authentication: なし（レート制限あり）
+        request_body:
+          systemInstruction: string
+          contents: array
+          generationConfig: object
+        response:
+          text: string
+          groundingUrls: array
+
+      - path: /api/chat/send
+        method: POST
+        purpose: Gemini APIプロキシ - チャットメッセージ送信
+        authentication: なし（レート制限あり）
+        request_body:
+          systemInstruction: string
+          history: array
+          message: string
+        response:
+          text: string
+          role: string
+
+      - path: /api/chat/start
+        method: POST
+        purpose: チャットセッション初期化（現在未使用）
+        authentication: なし
+
+    security:
+      cors:
+        enabled: true
+        allowed_origins:
+          - https://civitas-twin-902796884296.asia-northeast1.run.app
+          - http://localhost:3000 (開発時のみ)
+          - http://localhost:8080 (開発時のみ)
+        allowed_methods: [GET, POST]
+
+      rate_limiting:
+        enabled: true
+        library: express-rate-limit 8.2
+        window: 15分
+        max_requests: 50
+        endpoints: /api/*
+        headers: RateLimit-* (標準ヘッダー)
+
+      payload_limit: 1MB
+
+      error_handling:
+        production: 汎用エラーメッセージのみ返却（details非表示）
+        development: error.message を含む詳細エラーを返却
+
+    dependencies:
+      - name: express
+        version: "^5.2.1"
+      - name: cors
+        version: "^2.8.6"
+      - name: express-rate-limit
+        version: "^8.2.1"
+      - name: dotenv
+        version: "^17.3.1"
+      - name: "@google/genai"
+        version: "^1.34.0"
+        purpose: Gemini API呼び出し
+
   # ----- Cloud Run (Serving) -----
   cloud_run:
     service_name: civitas-twin
@@ -111,9 +188,19 @@ components:
     port: 8080
     authentication: none (invoker IAM check disabled)
     container:
-      base_image: nginx:alpine
-      content: Viteビルド済み静的ファイル (/usr/share/nginx/html)
-      config: nginx.conf → /etc/nginx/conf.d/default.conf
+      base_image: node:22-slim
+      server: Express (server/index.js)
+      static_files: Viteビルド済み (dist/) を Express.static で配信
+      spa_fallback: すべてのルート → index.html (app.use)
+    environment_variables:
+      - name: GEMINI_API_KEY
+        source: Cloud Run 環境変数（--set-env-vars）
+        purpose: Gemini API認証
+      - name: NODE_ENV
+        value: production
+        purpose: エラーメッセージ制御、CORS設定
+      - name: PORT
+        value: 8080 (デフォルト)
     scaling:
       min_instances: 0  # scale to zero
       max_instances: default
@@ -123,16 +210,19 @@ components:
     provider: Google Cloud
     model: gemini-3-pro-preview
     sdk: "@google/genai ^1.34.0"
-    invocation: client-side (browser → Gemini API 直接)
-    authentication: API Key (build時にViteが埋め込み)
+    invocation: server-side (frontend → Express backend → Gemini API)
+    authentication: API Key (Cloud Run 環境変数から読み取り)
+    security: APIキーはサーバーサイドのみで保持、クライアントには非露出
     features:
-      - name: generateContent
+      - name: ai.models.generateContent
         purpose: 社会反応シミュレーション推論
+        endpoint: /api/generate (Expressプロキシ)
         config:
           temperature: 0.1
           tools: [googleSearch]
-      - name: chats.create
+      - name: ai.chats.create
         purpose: Deep Diveインタビューセッション
+        endpoint: /api/chat/send (Expressプロキシ)
         config:
           temperature: 0.7
           tools: []
@@ -152,16 +242,25 @@ data_flows:
         to: frontend
         data: newsText, purpose, region
       - from: frontend
+        to: backend (Express)
+        endpoint: POST /api/generate
+        data: systemInstruction, contents, generationConfig
+        protocol: HTTPS (fetch API)
+      - from: backend
         to: gemini_api
         data: プロンプト (ペルソナDNA + 心理理論 + 入力テキスト)
-        protocol: HTTPS (REST)
+        protocol: Gemini API SDK
+        auth: API Key (環境変数)
       - from: gemini_api
         to: google_search
         data: 外部情勢の検索クエリ
         note: Grounding toolとして自動実行
       - from: gemini_api
+        to: backend
+        data: レポートMarkdown + groundingChunks
+      - from: backend
         to: frontend
-        data: レポートMarkdown + groundingUrls
+        data: { text, groundingUrls }
       - from: frontend
         to: user
         data: レンダリング済みレポート (HTML/PDF)
@@ -173,12 +272,19 @@ data_flows:
         to: frontend
         data: セグメント選択 (High/Mid/Low) + 質問テキスト
       - from: frontend
+        to: backend (Express)
+        endpoint: POST /api/chat/send
+        data: systemInstruction, history, message
+      - from: backend
         to: gemini_api
-        data: チャットメッセージ (セッション維持)
-        note: startInterviewSessionで生成したChatオブジェクト経由
+        data: チャットメッセージ (ai.chats.create 経由)
+        note: 履歴管理は現在未実装（各リクエスト独立）
       - from: gemini_api
-        to: frontend
+        to: backend
         data: ペルソナとしての応答テキスト
+      - from: backend
+        to: frontend
+        data: { text, role }
       - from: frontend
         to: user
         data: チャットUI上の応答表示
@@ -197,13 +303,9 @@ build_pipeline:
   production_build:
     command: npm run build
     output: dist/
-    env_injection:
-      mechanism: Vite define plugin (build-time replacement)
-      variables:
-        - name: process.env.API_KEY
-          source: GEMINI_API_KEY in .env.local
-        - name: process.env.GEMINI_API_KEY
-          source: GEMINI_API_KEY in .env.local
+    note: >
+      APIキーはビルド時に埋め込まれない（v1.2.1以降）。
+      バックエンドが環境変数から読み取る。
 
   container:
     dockerfile: Dockerfile
@@ -211,9 +313,13 @@ build_pipeline:
       - name: build
         base: node:22-slim
         steps: [npm ci, npm run build]
-      - name: serve
-        base: nginx:alpine
-        steps: [COPY dist → nginx html, COPY nginx.conf]
+      - name: production
+        base: node:22-slim
+        steps:
+          - npm ci --production (本番依存関係のみ)
+          - COPY dist/ (ビルド済み静的ファイル)
+          - COPY server/ (Express サーバー)
+        cmd: node server/index.js
 
   cloud_deploy:
     command: >
@@ -224,12 +330,16 @@ build_pipeline:
       --allow-unauthenticated
       --port=8080
       --project=gen-lang-client-0491126700
+      --set-env-vars="GEMINI_API_KEY=xxx,NODE_ENV=production"
     post_deploy: >
       export CLOUDSDK_ACTIVE_CONFIG_NAME=kiriko-civitas &&
       gcloud run services update civitas-twin
       --region=asia-northeast1
       --project=gen-lang-client-0491126700
       --no-invoker-iam-check
+    note: >
+      GEMINI_API_KEY と NODE_ENV は環境変数として設定必須。
+      NODE_ENV=production によりエラーメッセージ詳細が非表示になる。
     services_required:
       - run.googleapis.com
       - cloudbuild.googleapis.com
@@ -270,13 +380,44 @@ gcp_setup:
 # Security Notes
 # ---------------------------------------------------------------------------
 security:
-  api_key_exposure: >
-    GEMINI_API_KEY はViteのビルド時にクライアントJSへ埋め込まれるため、
-    ブラウザのDevToolsから閲覧可能。本番運用時はバックエンドプロキシ経由に
-    変更すべきだが、ハッカソン短期用途では許容範囲として運用。
+  api_key_protection: >
+    ✅ v1.2.1 で解決済み。
+    GEMINI_API_KEY はサーバーサイド（Express）のみで保持。
+    Cloud Run 環境変数から読み取り、クライアントJSには含まれない。
+
+  backend_security:
+    cors:
+      status: ✅ 実装済み
+      description: >
+        本番URL (https://civitas-twin-902796884296.asia-northeast1.run.app) のみ許可。
+        開発時は localhost:3000/8080 も許可（NODE_ENV !== 'production' 時）。
+
+    rate_limiting:
+      status: ✅ 実装済み
+      description: >
+        /api/* エンドポイントに15分あたり50リクエストの制限。
+        DDoS攻撃・API枯渇攻撃対策。
+
+    error_handling:
+      status: ✅ 実装済み
+      description: >
+        本番環境（NODE_ENV=production）では error.message を返さず、
+        汎用エラーメッセージのみ返却。内部構成の漏洩を防止。
+
+    payload_limit:
+      status: ✅ 実装済み
+      description: JSONペイロードを1MBに制限（不要に大きいリクエストを拒否）
+
+  authentication:
+    status: ⚠️ 未実装
+    description: >
+      APIエンドポイントに認証なし（レート制限のみ）。
+      本番運用時は Firebase Authentication 等の導入を推奨。
+
   cloud_run_auth: >
     組織ポリシー (iam.allowedPolicyMemberDomains) により allUsers IAMバインディング
     不可のため、--no-invoker-iam-check で公開。
+
   secrets_in_repo: >
-    .env.local は .gitignore 対象。ただし .dockerignore からは除外し、
-    Cloud Build時にコンテナ内でViteが読み取る設計。
+    .env.local は .gitignore 対象。
+    Cloud Run デプロイ時は --set-env-vars で環境変数を設定。
